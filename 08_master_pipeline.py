@@ -118,15 +118,43 @@ def apply_fusion(gas_ppm, tilt_deg, vibration_g):
 # ---------------------------------------------------------------
 _model = joblib.load("hazard_model.joblib")
 
-def apply_classification(features_dict):
+# Column order engineer_single_reading() returns its dict in -- must match
+# the column order feature_columns used at training time (03_train_model.py).
+# Kept as an explicit constant (rather than relying on dict-ordering being
+# obviously correct at a glance) since apply_classification's numpy path
+# depends on it.
+FEATURE_COLUMN_ORDER = [
+    "gas_ppm", "tilt_deg", "vibration_g",
+    "gas_risk", "tilt_risk", "vibration_risk",
+    "structural_risk", "joint_risk",
+]
+
+
+def apply_classification(features_dict, model=None, use_numpy=False):
     """
     Input: dict of engineered features (from Layer 1)
     Output: (prediction, confidence_dict)
+
+    model: which trained classifier to use. Defaults to the module-level
+        baseline model (_model) so existing callers (12_laptop_live_demo.py,
+        13_hardware_deployment_pipeline.py) are unaffected.
+    use_numpy: if True, build a plain NumPy row instead of a 1-row pandas
+        DataFrame before calling predict/predict_proba. This is the
+        preprocessing optimization from 11_verify_benchmarks.py -- it's
+        opt-in and defaults to False so default behavior is unchanged.
     """
-    X = pd.DataFrame([features_dict])
-    prediction = _model.predict(X)[0]
-    probabilities = _model.predict_proba(X)[0]
-    confidence = dict(zip(_model.classes_, probabilities.round(3)))
+    if model is None:
+        model = _model
+
+    if use_numpy:
+        import numpy as np
+        X = np.array([[features_dict[c] for c in FEATURE_COLUMN_ORDER]])
+    else:
+        X = pd.DataFrame([features_dict], columns=FEATURE_COLUMN_ORDER)
+
+    prediction = model.predict(X)[0]
+    probabilities = model.predict_proba(X)[0]
+    confidence = dict(zip(model.classes_, probabilities.round(3)))
     return prediction, confidence
 
 
@@ -164,6 +192,49 @@ def run_pipeline(gas_ppm, tilt_deg, vibration_g):
 
     # Stage 4: output
     return format_output(prediction, confidence, raw_reading, corrected_reading)
+
+
+# ---------------------------------------------------------------
+# PIPELINE FACTORY (for benchmarking -- 11_verify_benchmarks.py)
+# ---------------------------------------------------------------
+# run_pipeline() above is left untouched for 12_laptop_live_demo.py and
+# 13_hardware_deployment_pipeline.py, which both rely on the SAME module-
+# level trackers persisting across repeated calls (that's the point --
+# the drift tracker needs continuous state as the rover keeps sampling).
+#
+# For benchmarking baseline-vs-optimized, that shared global state is a
+# problem: running both configs through the same trackers would let one
+# config's calibration/drift history leak into the other's timing and
+# predictions. build_pipeline() returns a self-contained pipeline with
+# its OWN trackers and its OWN model, so two configs can be benchmarked
+# side by side without contaminating each other.
+def build_pipeline(model_path="hazard_model.joblib", use_numpy=False):
+    """
+    Returns a run(gas_ppm, tilt_deg, vibration_g) callable, with independent
+    drift-tracker state, wired to the given model file and preprocessing
+    style. Does not touch or reset the module-level _gas_tracker etc. used
+    by run_pipeline().
+    """
+    model = joblib.load(model_path)
+    gas_tracker = BaselineDriftTracker()
+    tilt_tracker = BaselineDriftTracker()
+    vibration_tracker = BaselineDriftTracker()
+
+    def run(gas_ppm, tilt_deg, vibration_g):
+        raw_reading = {"gas_ppm": gas_ppm, "tilt_deg": tilt_deg, "vibration_g": vibration_g}
+
+        corrected_gas = gas_tracker.update_and_correct(gas_ppm)
+        corrected_tilt = tilt_tracker.update_and_correct(tilt_deg)
+        corrected_vib = vibration_tracker.update_and_correct(vibration_g)
+        corrected_reading = {
+            "gas_ppm": corrected_gas, "tilt_deg": corrected_tilt, "vibration_g": corrected_vib
+        }
+
+        features = apply_fusion(corrected_gas, corrected_tilt, corrected_vib)
+        prediction, confidence = apply_classification(features, model=model, use_numpy=use_numpy)
+        return format_output(prediction, confidence, raw_reading, corrected_reading)
+
+    return run
 
 
 if __name__ == "__main__":
