@@ -17,28 +17,87 @@ LAYER ORDER (matters!):
 
 import joblib
 import pandas as pd
+from collections import deque
 from feature_engineering_helper import engineer_single_reading
 
 
 # ---------------------------------------------------------------
 # LAYER 2: Drift Correction
 # ---------------------------------------------------------------
-# Placeholder for now -- your validated technique (per-batch standardization
-# or reference-instrument recalibration) plugs in here later. Until you
-# have live calibration data from the actual rover, this is a pass-through
-# so the pipeline runs end-to-end today.
+# Adaptive rolling-baseline correction, applied independently per sensor.
+#
+# WHY THIS TECHNIQUE (not the per-batch standardization validated in
+# 07_drift_correction_comparison.py): that technique needs a whole batch
+# of readings at once to compute z-scores. This pipeline processes ONE
+# live reading at a time -- there's no "batch" to standardize against.
+# Rolling-baseline correction is the standard lightweight real-time
+# adaptation of the same idea: track a rolling median of recent readings
+# as the "current baseline," compare it to a "reference baseline"
+# established during an initial calibration period, and subtract the
+# difference (the drift) from each new raw reading. This preserves real
+# physical units (ppm, degrees, g) -- required here because the risk
+# formulas in feature_engineering_helper.py use fixed absolute thresholds
+# (GAS_MAX, TILT_MAX, etc.), not standardized scores.
+#
+# MEASURED LIMITATION (tested in drift_baseline_test.py against simulated
+# continuous drift): this reduces drift-induced error by roughly HALF, not
+# to zero. Rolling-median tracking inherently lags behind continuous,
+# accelerating drift because the baseline itself is computed from a window
+# that already includes some drifted readings. This is a known property of
+# this class of technique, not a bug -- report it honestly as "meaningfully
+# reduces drift error" rather than "eliminates drift."
+class BaselineDriftTracker:
+    def __init__(self, window_size=50, calibration_size=15):
+        self.window_size = window_size
+        self.calibration_size = calibration_size
+        self.buffer = deque(maxlen=window_size)
+        self.reference_baseline = None
+        self._calibration_buffer = []
+
+    def _median(self, values):
+        s = sorted(values)
+        n = len(s)
+        mid = n // 2
+        if n % 2 == 0:
+            return (s[mid - 1] + s[mid]) / 2
+        return s[mid]
+
+    def update_and_correct(self, raw_value):
+        if self.reference_baseline is None:
+            # Still calibrating -- assumes the rover starts in a known-safe
+            # state for the first `calibration_size` readings.
+            self._calibration_buffer.append(raw_value)
+            self.buffer.append(raw_value)
+            if len(self._calibration_buffer) >= self.calibration_size:
+                self.reference_baseline = self._median(self._calibration_buffer)
+            return raw_value  # no correction applied yet during calibration
+
+        self.buffer.append(raw_value)
+        current_baseline = self._median(self.buffer)
+        drift_offset = current_baseline - self.reference_baseline
+        return raw_value - drift_offset
+
+
+# One tracker per sensor stream -- module-level so state persists across
+# repeated calls to run_pipeline() as the rover keeps sampling.
+_gas_tracker = BaselineDriftTracker()
+_tilt_tracker = BaselineDriftTracker()
+_vibration_tracker = BaselineDriftTracker()
+
+
 def apply_drift_correction(gas_ppm, tilt_deg, vibration_g):
     """
     Input: raw sensor values
     Output: drift-corrected sensor values (same shape/units)
 
-    TODO (once real sensor + reference data is available):
-    replace this pass-through with the real correction logic validated
-    in 07_drift_correction_comparison.py
+    NOTE: correction only activates after each tracker's calibration
+    period (first `calibration_size` calls per sensor). Until then this
+    is a pass-through, on the assumption the rover starts in a known-safe
+    state that's used to set the reference baseline.
     """
-    corrected_gas = gas_ppm       # no correction applied yet
-    corrected_tilt = tilt_deg     # IMU drift correction not yet implemented
-    corrected_vibration = vibration_g
+    corrected_gas = _gas_tracker.update_and_correct(gas_ppm)
+    corrected_tilt = _tilt_tracker.update_and_correct(tilt_deg)
+    corrected_vibration = _vibration_tracker.update_and_correct(vibration_g)
     return corrected_gas, corrected_tilt, corrected_vibration
 
 
