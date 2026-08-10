@@ -16,7 +16,7 @@ import pandas as pd
 import glob
 import os
 
-DATA_FOLDER = r"C:\Users\krishnaswamy kv\Documents\competition_project\ai layer\sensor_tilt\archive\Dataset"  # <-- change this to your actual folder path
+DATA_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "archive", "Dataset")  # relative to this script's location, works on any machine
 
 def parse_dat_file(filepath, batch_number, max_debug_lines=3):
     """
