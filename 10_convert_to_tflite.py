@@ -65,7 +65,18 @@ with open("hazard_model_quantized.tflite", "wb") as f:
 quant_size_kb = os.path.getsize("hazard_model_quantized.tflite") / 1024
 print(f"Quantized TFLite model saved: hazard_model_quantized.tflite ({quant_size_kb:.1f} KB)")
 
-reduction_pct = (1 - quant_size_kb / float_size_kb) * 100
-print(f"\nSize reduction from quantization: {reduction_pct:.1f}%")
-print("(This size-reduction number is exactly the kind of metric the")
-print(" Arm Optimization Challenge scores under Technological Implementation.)")
+size_change_pct = (quant_size_kb / float_size_kb - 1) * 100
+print(f"\nFloat32 baseline: {float_size_kb:.2f} KB  |  INT8 quantized: {quant_size_kb:.2f} KB")
+if size_change_pct > 0:
+    print(f"Quantization INCREASED size by {size_change_pct:.1f}%.")
+    print("This model has ~307 parameters -- too small for INT8 quantization to pay off.")
+    print("Per-tensor scale/zero-point metadata overhead exceeds the weight-storage")
+    print("savings at this scale. Dynamic-range (weights-only) quantization was also")
+    print("tested and produced 0% size change for the same reason.")
+    print("\nAt this model size, the honest optimization claim is NOT file size --")
+    print("it's inference LATENCY, which must be measured on real Arm hardware")
+    print("(QRB2210), not estimated from file size. INT8 ops can be faster on ARM")
+    print("even when the file itself isn't smaller. Run 11_tflite_inference.py")
+    print("on-device and time it to get that number.")
+else:
+    print(f"Quantization reduced size by {abs(size_change_pct):.1f}%.")
