@@ -1,6 +1,9 @@
 name: ECOsphere Arm64 Validation
 
 on:
+  push:
+    branches:
+      - ecosphere-completion
   workflow_dispatch:
 
 jobs:
