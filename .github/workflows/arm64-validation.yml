@@ -1,0 +1,41 @@
+name: ECOsphere Arm64 Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  arm64-benchmark:
+    # Real Arm64 CPU, not x86 emulation.
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pandas scikit-learn joblib
+
+      - name: Confirm real Arm64 host
+        run: |
+          uname -m
+          python - <<'PY'
+          import platform
+          print("Python architecture:", platform.machine())
+          assert platform.machine().lower() in ("aarch64", "arm64")
+          PY
+
+      - name: Run ECOsphere Arm64 validation
+        run: python arm64_validation.py
+
+      - name: Upload Arm64 results
+        uses: actions/upload-artifact@v5
+        with:
+          name: ecosphere-arm64-validation
+          path: arm64_validation_results.json
