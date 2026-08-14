@@ -19,6 +19,7 @@ import joblib
 import pandas as pd
 from collections import deque
 from feature_engineering_helper import engineer_single_reading
+from environmental_context import analyze_environment
 
 
 # ---------------------------------------------------------------
